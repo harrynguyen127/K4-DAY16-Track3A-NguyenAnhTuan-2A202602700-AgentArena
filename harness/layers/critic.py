@@ -91,4 +91,49 @@ class Critic(Middleware):
         #     claims = [], citations = [], và viết lại "answer" nói rõ là
         #     không đủ căn cứ.
         #  6. Cập nhật report["citations"] cho khớp với claims còn lại.
-        return report  # <- mặc định KHÔNG LÀM GÌ: agent vẫn chạy được
+        claims = report.get("claims")
+        corpus = getattr(ctx, "corpus", None)
+        if not isinstance(claims, list):
+            return report
+
+        kept = []
+        split_happened = False
+        docs = corpus.docs if corpus is not None else []
+        for claim in claims:
+            if not isinstance(claim, dict):
+                continue
+            text = claim.get("text")
+            if not isinstance(text, str) or not text:
+                continue
+            if ctx.saw(text):
+                kept.append(claim)
+                continue
+            for sep in (" và ", "và "):
+                if sep not in text:
+                    continue
+                left, right = text.split(sep, 1)
+                left, right = left.strip(), right.strip()
+                if not left or not right or not ctx.saw(left) or not ctx.saw(right):
+                    continue
+                left_doc = next((d.doc_id for d in docs if left in d.body and d.body in ctx.observed_text), None)
+                right_doc = next((d.doc_id for d in docs if right in d.body and d.body in ctx.observed_text and d.doc_id != left_doc), None)
+                if left_doc and right_doc:
+                    kept.append({"text": left, "doc_id": left_doc})
+                    kept.append({"text": right, "doc_id": right_doc})
+                    split_happened = True
+                    break
+
+        if not kept:
+            report["abstain"] = True
+            report["claims"] = []
+            report["citations"] = []
+            report["answer"] = "Không đủ căn cứ trong bằng chứng đã quan sát để kết luận chắc chắn."
+            return report
+
+        report["claims"] = kept
+        report["citations"] = sorted(
+            {claim.get("doc_id") for claim in kept if isinstance(claim.get("doc_id"), str)}
+        )
+        if split_happened:
+            report["abstain"] = True
+        return report
